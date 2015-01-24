@@ -5,7 +5,9 @@ from itertools import product, combinations, chain
 
 import numpy as np
 from gensim.models import Word2Vec
-from gensim.matutils import unitvec
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.datasets import load_svmlight_file
+#from scipy.spatial.distance import cosine
 from extract_features import parse_play
 from pysofia import SofiaML
 
@@ -29,18 +31,18 @@ def create_candidates(characters, lover_pairs):
                     if a.endswith(b[-4:]) and a != b and 
                        not ((a, b) in lover_pairs or (b, a) in lover_pairs)))
 
-def displacement_relation(a, b, c, d, model):
-    pair_a = unitvec(np.array([ 1 * model.syn0norm[model.vocab[a].index], 
-                               -1 * model.syn0norm[model.vocab[b].index]]).mean(axis=0))
-    pair_b = unitvec(np.array([ 1 * model.syn0norm[model.vocab[c].index],
-                               -1 * model.syn0norm[model.vocab[d].index]]).mean(axis=0))
-    return np.dot(pair_a, pair_b)
-
 def max_displacement_sim(a, b, lovers, model):
-    return max(displacement_relation(a, b, c, d, model) for (c, d) in lovers
+    return max(model.n_similarity([a, b], [c, d]) for (c, d) in lovers
                if not (a in (c, d) or b in (c, d)))
 
-def create_folds(lover_pairs, candidate_pairs, par_model, word_model, features, f_select=None):
+def normalize_features(samples, query_ids, normalizer):
+    scaler = MinMaxScaler if normalizer == 'minmax' else StandardScaler
+    for qid in np.unique(query_ids):
+        samples[query_ids == qid] = scaler().fit_transform(samples[query_ids == qid])
+    return samples
+
+
+def create_folds(lover_pairs, candidate_pairs, par_model, word_model, features, f_select=None, normalizer=False):
     loving_persons = list(set(pair[0] for pair in lover_pairs))
     for loving_person in loving_persons:
         X_train, X_test, y_train, y_test, Q_train, Q_test = [], [], [], [], [], []
@@ -70,6 +72,9 @@ def create_folds(lover_pairs, candidate_pairs, par_model, word_model, features, 
         X_train, X_test = np.array(X_train)[:,f_select], np.array(X_test)[:,f_select]
         y_train, y_test = np.array(y_train), np.array(y_test)
         Q_train, Q_test = np.array(Q_train), np.array(Q_test)
+        if normalizer:
+            X_train = normalize_features(X_train, Q_train, normalizer)
+            X_test = normalize_features(X_test, Q_test, normalizer)
         train_positions = Q_train.argsort()
         X_train, y_train, Q_train = X_train[train_positions], y_train[train_positions], Q_train[train_positions]
         test_positions = Q_test.argsort()
@@ -78,7 +83,7 @@ def create_folds(lover_pairs, candidate_pairs, par_model, word_model, features, 
 
 
 if __name__ == '__main__':
-    par_model = Word2Vec.load_word2vec_format('plays-paragraphs.bin', binary=True)
+    par_model = Word2Vec.load_word2vec_format('plays-paragraphs-dbow.bin', binary=True)
     par_model.init_sims()
     word_model = Word2Vec.load_word2vec_format("play-paragraphs-coref-sg.bin", binary=True)
     word_model.init_sims()
@@ -90,8 +95,8 @@ if __name__ == '__main__':
     MRR, MRR_1 = [], []
     for i, (X_train, X_test, y_train, y_test, Q_train, Q_test) in enumerate(create_folds(
         lover_pairs, candidate_pairs, par_model, word_model, features)):
-        ranker = SofiaML(name='fold-%s' % i, alpha=0.3, learner='pegasos', model='rank', 
-            n_features=X_train.shape[1]+1, max_iter=1000)
+        ranker = SofiaML(name='fold-%s' % i, alpha=0.3, learner='pegasos', model='query-norm-rank', 
+            n_features=8, max_iter=100000)
         ranker.fit(X_train, y_train, Q_train)
         ranking = ranker.predict(X_test, y_test)
         MRR.append(1. / (ranking.tolist().index(y_test.tolist().index(1)) + 1))

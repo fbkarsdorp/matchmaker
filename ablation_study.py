@@ -8,7 +8,7 @@ from learning_rank_lovers import load_lovers, extract_features, create_candidate
 from learning_rank_lovers import powerset, create_folds
 
 
-par_model = Word2Vec.load_word2vec_format('plays-paragraphs.bin', binary=True)
+par_model = Word2Vec.load_word2vec_format('plays-paragraphs-dbow.bin', binary=True)
 par_model.init_sims()
 word_model = Word2Vec.load_word2vec_format("play-paragraphs-coref-sg.bin", binary=True)
 word_model.init_sims()
@@ -19,15 +19,20 @@ characters = set(w for w in par_model.vocab if '_' in w and w in features)
 candidate_pairs = create_candidates(characters, lover_pairs)
 
 feature_names = np.array(['par_sim', 'par_disp', 'word_sim', 'word_disp', 'sex', 'interaction', 'scene_cooccurrence'])
-for f_select in powerset(range(7)):
+for f_select in list(powerset(range(7)))[::-1]:
     if f_select:
         MRR, MRR_1 = [], []
         f_select = list(f_select)
+        if len(f_select) > 1:
+            continue
+#        if not (0 in f_select or 1 in f_select):
+#            continue
+        # experiment with scaling (best score so far...)
         for i, (X_train, X_test, y_train, y_test, Q_train, Q_test) in enumerate(create_folds(
-            lover_pairs, candidate_pairs, par_model, word_model, features, f_select)):
+            lover_pairs, candidate_pairs, par_model, word_model, features, f_select, normalizer='minmax')):
             foldname = 'fold-%s-%s' % (i, '-'.join(feature_names[f_select]))
-            ranker = SofiaML(name=foldname, alpha=0.3, learner='pegasos', model='rank', 
-                n_features=len(f_select)+1, max_iter=1000)
+            ranker = SofiaML(name=foldname, alpha=0.3, learner='pegasos', model='query-norm-rank', 
+                n_features=8, max_iter=100000)
             ranker.fit(X_train, y_train, Q_train)
             ranking = ranker.predict(X_test, y_test)
             fold_mrr = []
